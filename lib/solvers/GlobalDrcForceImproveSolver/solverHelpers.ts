@@ -349,37 +349,39 @@ export const collectViaNodes = (
   for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
     const route = routes[routeIndex]
     if (!route) continue
-    const seenIndexes = new Set<number>()
+    let groupStart = 0
 
-    for (let index = 0; index < route.route.length - 1; index += 1) {
-      const current = route.route[index]
-      const next = route.route[index + 1]
-      if (!current || !next) continue
-      if (current.z === next.z || !areSameXY(current, next)) continue
-
-      const pointIndexes = [index, index + 1]
-      for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-        const point = route.route[cursor]
-        if (!point || !areSameXY(point, current)) break
-        pointIndexes.push(cursor)
-      }
-      for (let cursor = index + 2; cursor < route.route.length; cursor += 1) {
-        const point = route.route[cursor]
-        if (!point || !areSameXY(point, current)) break
-        pointIndexes.push(cursor)
-      }
-
-      const uniquePointIndexes = [...new Set(pointIndexes)]
-      if (
-        uniquePointIndexes.some((pointIndex) => seenIndexes.has(pointIndex))
+    while (groupStart < route.route.length - 1) {
+      const groupPoint = route.route[groupStart]!
+      let groupEnd = groupStart
+      while (
+        groupEnd + 1 < route.route.length &&
+        areSameXY(groupPoint, route.route[groupEnd + 1]!)
       ) {
+        groupEnd += 1
+      }
+
+      let transitionIndex: number | undefined
+      for (let index = groupStart; index < groupEnd; index += 1) {
+        if (route.route[index]!.z !== route.route[index + 1]!.z) {
+          transitionIndex = index
+          break
+        }
+      }
+      if (transitionIndex === undefined) {
+        groupStart = groupEnd + 1
         continue
       }
-      for (const pointIndex of uniquePointIndexes) {
-        seenIndexes.add(pointIndex)
+
+      const pointIndexes = [transitionIndex, transitionIndex + 1]
+      for (let index = transitionIndex - 1; index >= groupStart; index -= 1) {
+        pointIndexes.push(index)
+      }
+      for (let index = transitionIndex + 2; index <= groupEnd; index += 1) {
+        pointIndexes.push(index)
       }
 
-      const endpointPointIndexes = uniquePointIndexes.filter(
+      const endpointPointIndexes = pointIndexes.filter(
         (pointIndex) =>
           pointIndex === 0 || pointIndex === route.route.length - 1,
       )
@@ -387,7 +389,7 @@ export const collectViaNodes = (
         Boolean(route.route[pointIndex]?.pcb_port_id),
       )
 
-      const endpointZ = uniquePointIndexes.map((i) => route.route[i]!.z)
+      const endpointZ = pointIndexes.map((i) => route.route[i]!.z)
       const minZ = srj.allowBlindAndBuriedVias ? Math.min(...endpointZ) : 0
       const maxZ = srj.allowBlindAndBuriedVias
         ? Math.max(...endpointZ)
@@ -395,15 +397,16 @@ export const collectViaNodes = (
       vias.push({
         routeIndex,
         rootConnectionName: getRootConnectionName(route),
-        pointIndexes: uniquePointIndexes,
+        pointIndexes,
         zLayers: Array.from({ length: maxZ - minZ + 1 }, (_, z) => minZ + z),
-        x: current.x,
-        y: current.y,
+        x: groupPoint.x,
+        y: groupPoint.y,
         radius: (route.viaDiameter ?? srj.minViaDiameter ?? 0.3) / 2,
         movable: endpointPointIndexes.length === 0,
         canCanonicalize:
           endpointPointIndexes.length === 0 || !hasTaggedTerminal,
       })
+      groupStart = groupEnd + 1
     }
   }
 
@@ -1975,9 +1978,10 @@ const getSameRootViaSite = (
   routes: MutableRoute[],
   via: ViaNode,
   srj: SimpleRouteJson,
+  currentVias?: ViaNode[],
 ): ViaNode[] => {
-  const currentVias = collectViaNodes(routes, srj)
-  const currentVia = currentVias.find(
+  const resolvedVias = currentVias ?? collectViaNodes(routes, srj)
+  const currentVia = resolvedVias.find(
     (candidate) =>
       candidate.routeIndex === via.routeIndex &&
       candidate.pointIndexes.some((pointIndex) =>
@@ -1986,7 +1990,7 @@ const getSameRootViaSite = (
   )
   if (!currentVia) return []
 
-  return currentVias.filter(
+  return resolvedVias.filter(
     (candidate) =>
       candidate.rootConnectionName === currentVia.rootConnectionName &&
       Math.hypot(candidate.x - currentVia.x, candidate.y - currentVia.y) <=
@@ -2000,8 +2004,9 @@ const translateSameRootViaSite = (
   dx: number,
   dy: number,
   srj: SimpleRouteJson,
+  currentVias?: ViaNode[],
 ) => {
-  const siteVias = getSameRootViaSite(routes, via, srj)
+  const siteVias = getSameRootViaSite(routes, via, srj, currentVias)
   if (
     siteVias.length === 0 ||
     siteVias.some(
@@ -2037,9 +2042,10 @@ const moveVia = (
   dx: number,
   dy: number,
   srj: SimpleRouteJson,
+  currentVias?: ViaNode[],
 ) =>
   via.movable &&
-  getSameRootViaSite(routes, via, srj).length <= 1 &&
+  getSameRootViaSite(routes, via, srj, currentVias).length <= 1 &&
   translateVia(routes, via, dx, dy, srj)
 
 const moveSegmentAwayFromPoint = (
@@ -2444,9 +2450,17 @@ const pushViaViaPair = (
   right: ViaNode,
   srj: SimpleRouteJson,
   connMap?: ConnectivityMap,
-  maxMove = BROAD_MAX_MOVE,
-  allowSameNet = false,
+  options: {
+    maxMove?: number
+    allowSameNet?: boolean
+    currentVias?: ViaNode[]
+  } = {},
 ) => {
+  const {
+    maxMove = BROAD_MAX_MOVE,
+    allowSameNet = false,
+    currentVias,
+  } = options
   if (
     !allowSameNet &&
     sharesNet(left.rootConnectionName, right.rootConnectionName, connMap)
@@ -2484,6 +2498,7 @@ const pushViaViaPair = (
     directionX * move,
     directionY * move,
     srj,
+    currentVias,
   )
   const movedRight = moveVia(
     routes,
@@ -2491,6 +2506,7 @@ const pushViaViaPair = (
     -directionX * move,
     -directionY * move,
     srj,
+    currentVias,
   )
   return movedLeft || movedRight
 }
@@ -2560,10 +2576,19 @@ const pushViaSegmentPair = (
   segment: Segment,
   srj: SimpleRouteJson,
   connMap?: ConnectivityMap,
-  maxMove = BROAD_MAX_MOVE,
-  moveDivisor = 2,
-  translateSharedViaSite = false,
+  options: {
+    maxMove?: number
+    moveDivisor?: number
+    translateSharedViaSite?: boolean
+    currentVias?: ViaNode[]
+  } = {},
 ) => {
+  const {
+    maxMove = BROAD_MAX_MOVE,
+    moveDivisor = 2,
+    translateSharedViaSite = false,
+    currentVias,
+  } = options
   if (sharesNet(via.rootConnectionName, segment.rootConnectionName, connMap))
     return false
 
@@ -2603,8 +2628,16 @@ const pushViaSegmentPair = (
         directionX * move,
         directionY * move,
         srj,
+        currentVias,
       )
-    : moveVia(routes, via, directionX * move, directionY * move, srj)
+    : moveVia(
+        routes,
+        via,
+        directionX * move,
+        directionY * move,
+        srj,
+        currentVias,
+      )
   const movedSegment = moveSegmentByDistribution(
     routes,
     segment,
@@ -2965,8 +2998,10 @@ const applyBroadRepulsionPass = (
           right,
           srj,
           connMap,
-          BROAD_MAX_MOVE,
-          allowSameNetViaPairs,
+          {
+            allowSameNet: allowSameNetViaPairs,
+            currentVias: vias,
+          },
         ) || changed
     }
   }
@@ -2983,7 +3018,13 @@ const applyBroadRepulsionPass = (
       const segment = segments[segmentIndex]
       if (!segment) continue
       changed =
-        pushViaSegmentPair(routes, via, segment, srj, connMap) || changed
+        pushViaSegmentPair(
+          routes,
+          via,
+          segment,
+          srj,
+          connMap,
+        ) || changed
     }
   }
 
@@ -3057,8 +3098,7 @@ const applyBroadViaSegmentCleanupPass = (
           segment,
           srj,
           connMap,
-          BROAD_MAX_MOVE,
-          1.75,
+          { moveDivisor: 1.75 },
         ) || changed
     }
   }
@@ -4814,14 +4854,21 @@ export const applyDrcErrorForces = (
                 nearestViaPair[1],
                 srj,
                 connMap,
-                VIA_PAIR_REPAIR_MAX_MOVE * Math.abs(scale),
-                isCanonicalViaPairError,
+                {
+                  maxMove: VIA_PAIR_REPAIR_MAX_MOVE * Math.abs(scale),
+                  allowSameNet: isCanonicalViaPairError,
+                },
               )) || changed
       } else {
         const nearestVia = getNearestVia(vias, center, targetRouteIndex)
         if (nearestVia) {
           changed =
-            moveViaAwayFromPoint(routes, nearestVia, repulsionPoint, srj) ||
+            moveViaAwayFromPoint(
+              routes,
+              nearestVia,
+              repulsionPoint,
+              srj,
+            ) ||
             changed
         }
       }
@@ -4853,7 +4900,12 @@ export const applyDrcErrorForces = (
       const nearestOwnerVia = getNearestVia(vias, center, routeIndex)
       if (nearestOwnerVia) {
         changed =
-          moveViaAwayFromPoint(routes, nearestOwnerVia, center, srj) || changed
+          moveViaAwayFromPoint(
+            routes,
+            nearestOwnerVia,
+            center,
+            srj,
+          ) || changed
         continue
       }
     }
@@ -4936,9 +4988,11 @@ export const applyDrcErrorForces = (
           nearestSegment,
           srj,
           connMap,
-          TRACE_PAD_REPAIR_MAX_MOVE * Math.abs(scale),
-          1,
-          allowSharedViaSiteMove,
+          {
+            maxMove: TRACE_PAD_REPAIR_MAX_MOVE * Math.abs(scale),
+            moveDivisor: 1,
+            translateSharedViaSite: allowSharedViaSiteMove,
+          },
         )
         if (pushedViaSegment) {
           changed = true
@@ -4980,15 +5034,21 @@ export const applyDrcErrorForces = (
 
     // Segment repair above can splice this route. Resolve its current via
     // points so both ends of the layer transition move together.
-    const nearestVia = hasTargetedTraceViaMetadata
-      ? undefined
-      : getNearestVia(collectViaNodes(routes, srj), center)
+    const refreshedVias = hasTargetedTraceViaMetadata
+      ? []
+      : collectViaNodes(routes, srj)
+    const nearestVia = getNearestVia(refreshedVias, center)
     if (
       nearestVia &&
       Math.hypot(nearestVia.x - center.x, nearestVia.y - center.y) < 0.35
     ) {
       changed =
-        moveViaAwayFromPoint(routes, nearestVia, repulsionPoint, srj) || changed
+        moveViaAwayFromPoint(
+          routes,
+          nearestVia,
+          repulsionPoint,
+          srj,
+        ) || changed
     }
   }
 
