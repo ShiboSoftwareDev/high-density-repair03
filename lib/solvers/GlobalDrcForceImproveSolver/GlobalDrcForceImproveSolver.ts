@@ -54,6 +54,7 @@ import {
 import { applyTraceToPadClearanceRelaxation } from "./traceToPadClearanceRelaxation"
 import { applyViaToPadClearanceRelaxation } from "./viaToPadClearanceRelaxation"
 import { RELAXED_DRC_OPTIONS } from "./drcPresets"
+import { getConnMapAwareSrj } from "./netUtils"
 import type {
   DrcEvaluator,
   DrcSnapshot,
@@ -178,6 +179,8 @@ export class GlobalDrcForceImproveSolver extends BaseSolver {
   readonly inputHdRoutes: HighDensityRoute[]
   readonly guardedInputHdRoutes: HighDensityRoute[]
   readonly connMap?: ConnectivityMap
+  readonly connectivityMapIsImmutable: boolean
+  private readonly connMapAwareSrj?: SimpleRouteJson
   readonly effort: number
   readonly drcEvaluator?: DrcEvaluator
   readonly referenceDrcEvaluator?: DrcEvaluator
@@ -232,6 +235,11 @@ export class GlobalDrcForceImproveSolver extends BaseSolver {
     this.inputHdRoutes = params.hdRoutes
     this.guardedInputHdRoutes = materializeRoutes(cloneRoutes(params.hdRoutes))
     this.connMap = params.connMap
+    this.connectivityMapIsImmutable =
+      params.connectivityMapIsImmutable ?? false
+    this.connMapAwareSrj = this.connectivityMapIsImmutable
+      ? getConnMapAwareSrj(params.srj, params.connMap)
+      : undefined
     this.effort = params.effort ?? 1
     this.drcEvaluator = params.drcEvaluator
     this.referenceDrcEvaluator = params.referenceDrcEvaluator
@@ -284,6 +292,7 @@ export class GlobalDrcForceImproveSolver extends BaseSolver {
         srj: this.srj,
         hdRoutes: this.inputHdRoutes,
         connMap: this.connMap,
+        connectivityMapIsImmutable: this.connectivityMapIsImmutable,
         effort: this.effort,
         drcEvaluator: this.drcEvaluator,
         referenceDrcEvaluator: this.referenceDrcEvaluator,
@@ -361,10 +370,10 @@ export class GlobalDrcForceImproveSolver extends BaseSolver {
       ? getTopologyRepairDrcSnapshot
       : getDrcSnapshot
     return createSnapshot(
-      this.srj,
+      this.drcEvaluator ? (this.connMapAwareSrj ?? this.srj) : this.srj,
       routes,
       this.drcEvaluator,
-      this.connMap,
+      this.drcEvaluator && this.connMapAwareSrj ? undefined : this.connMap,
       this.autoroutingDrcEngine,
     )
   }
@@ -385,10 +394,14 @@ export class GlobalDrcForceImproveSolver extends BaseSolver {
       return { errors, count: errors.length }
     }
     return getDrcSnapshot(
-      this.srj,
+      this.referenceDrcEvaluator
+        ? (this.connMapAwareSrj ?? this.srj)
+        : this.srj,
       routes,
       this.referenceDrcEvaluator,
-      this.connMap,
+      this.referenceDrcEvaluator && this.connMapAwareSrj
+        ? undefined
+        : this.connMap,
       this.autoroutingDrcEngine,
     )
   }
