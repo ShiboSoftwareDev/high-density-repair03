@@ -39,6 +39,11 @@ export type GlobalDrcForceImproveSolverParams = {
   srj: SimpleRouteJson
   hdRoutes: HighDensityRoute[]
   connMap?: ConnectivityMap
+  /**
+   * Declares that `connMap` will not change during this solver's lifetime.
+   * Allows connection-aware SRJ metadata to be prepared once and reused.
+   */
+  connectivityMapIsImmutable?: boolean
   effort?: number
   drcEvaluator?: DrcEvaluator
   /**
